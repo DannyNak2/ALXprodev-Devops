@@ -1,0 +1,16 @@
+#!/bin/bash
+
+# Directory: Advanced_shell
+# File: apiAutomation-0x00
+
+# Set output and error files
+OUTPUT_FILE="data.json"
+ERROR_FILE="errors.txt"
+
+# Make API request
+curl -s -f https://pokeapi.co/api/v2/pokemon/pikachu -o "$OUTPUT_FILE"
+
+# Check if curl command succeeded
+if [ $? -ne 0 ]; then
+    echo "[$(date)] Failed to fetch data for Pikachu" >> "$ERROR_FILE"
+fi
