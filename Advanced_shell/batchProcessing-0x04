@@ -1,42 +1,85 @@
 #!/bin/bash
 
-# Define input and output
-INPUT_DIR="pokemon_data"
-OUTPUT_CSV="pokemon_report.csv"
+# List of Pokémon
+pokemon_list=(bulbasaur ivysaur venusaur charmander charmeleon)
 
-# Ensure the input directory exists
-if [ ! -d "$INPUT_DIR" ]; then
-    echo "Error: $INPUT_DIR does not exist."
-    exit 1
-fi
+# Output directory
+OUTPUT_DIR="pokemon_data"
+mkdir -p "$OUTPUT_DIR"
 
-# Initialize the CSV file
-echo "Name,Height (m),Weight (kg)" > "$OUTPUT_CSV"
+# Max retries
+MAX_RETRIES=3
 
-# Temporary file for awk calculations
-TMP_FILE=$(mktemp)
+# Timeout (in seconds) for each job
+TIMEOUT=15
 
-# Loop through all JSON files
-for file in "$INPUT_DIR"/*.json; do
-    name=$(jq -r '.name' "$file" | sed 's/.*/\u&/')
-    height=$(jq -r '.height' "$file" | awk '{printf "%.2f", $1 / 10}')
-    weight=$(jq -r '.weight' "$file" | awk '{printf "%.2f", $1 / 10}')
-    echo "$name,$height,$weight" >> "$OUTPUT_CSV"
-    echo "$height,$weight" >> "$TMP_FILE"
+# Store PIDs of background jobs
+declare -A JOB_PIDS
+
+# Function to fetch data with retries
+fetch_pokemon_data() {
+    local pokemon=$1
+    local attempt=1
+    local success=false
+
+    while [ $attempt -le $MAX_RETRIES ]; do
+        echo "Fetching data for $pokemon (Attempt $attempt)..."
+        API_URL="https://pokeapi.co/api/v2/pokemon/$pokemon"
+        OUTPUT_FILE="${OUTPUT_DIR}/${pokemon}.json"
+
+        curl -s -f --max-time 10 "$API_URL" -o "$OUTPUT_FILE"
+        if [ $? -eq 0 ]; then
+            echo "Saved data to $OUTPUT_FILE ✅"
+            success=true
+            break
+        else
+            echo "Attempt $attempt failed for $pokemon ❌"
+            sleep 2
+        fi
+        attempt=$((attempt + 1))
+    done
+
+    if [ "$success" = false ]; then
+        echo "[$(date)] Failed to fetch data for $pokemon after $MAX_RETRIES attempts" >> errors.txt
+    fi
+}
+
+# Clear previous error log
+> errors.txt
+
+# Launch each fetch in background and track PID
+for pokemon in "${pokemon_list[@]}"; do
+    fetch_pokemon_data "$pokemon" &
+    pid=$!
+    JOB_PIDS["$pokemon"]=$pid
 done
 
-# Calculate averages using awk
-awk -F',' '{
-    height_total += $1
-    weight_total += $2
-    count++
-} END {
-    printf "\nAverage Height: %.2f m\n", height_total / count
-    printf "Average Weight: %.2f kg\n", weight_total / count
-}' "$TMP_FILE"
+# Start a timer
+start_time=$(date +%s)
 
-# Clean up temp file
-rm "$TMP_FILE"
+echo -e "\n🔄 Waiting for all background jobs to finish..."
 
-# Notify user
-echo -e "\nCSV Report generated at: $OUTPUT_CSV"
+for pokemon in "${!JOB_PIDS[@]}"; do
+    pid=${JOB_PIDS[$pokemon]}
+
+    (
+        # Polling loop to enforce timeout
+        while kill -0 "$pid" 2>/dev/null; do
+            current_time=$(date +%s)
+            elapsed=$((current_time - start_time))
+
+            if [ "$elapsed" -gt "$TIMEOUT" ]; then
+                echo "⛔ Timeout reached. Killing fetch for $pokemon (PID $pid)..."
+                kill -9 "$pid" 2>/dev/null
+                echo "[$(date)] Killed fetch process for $pokemon due to timeout" >> errors.txt
+                break
+            fi
+            sleep 1
+        done
+    ) &
+done
+
+# Final wait to clean up all background fetches and monitors
+wait
+
+echo -e "\n✅ All Pokémon fetch jobs completed (parallel mode with kill safety)"
